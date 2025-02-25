@@ -57,10 +57,10 @@ jobs:
 
       - name: Install k0sctl
         run: |
-          # Download the latest k0sctl binary directly
-          curl -LO https://github.com/k0sproject/k0sctl/releases/latest/download/k0sctl-linux-x64
-          chmod +x k0sctl-linux-x64
-          sudo mv k0sctl-linux-x64 /usr/local/bin/k0sctl
+          # Download the specific k0sctl binary for Linux
+          wget -O k0sctl https://github.com/k0sproject/k0sctl/releases/download/v0.22.0/k0sctl-linux-amd64
+          chmod +x k0sctl
+          sudo mv k0sctl /usr/local/bin/
           k0sctl version
 
       - name: Setup SSH key
