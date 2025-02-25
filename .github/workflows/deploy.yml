@@ -57,7 +57,8 @@ jobs:
 
       - name: Install k0sctl
         run: |
-          curl -sSLf https://get.k0sproject.io/k0sctl.sh | sudo bash
+          curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh | sudo bash
+          brew install k0sproject/tap/k0sctl
           k0sctl version
 
       - name: Setup SSH key
