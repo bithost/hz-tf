@@ -1,0 +1,116 @@
+name: Destroy k0s Cluster on Hetzner
+
+on:
+  workflow_dispatch:
+    inputs:
+      hetzner_token:
+        description: 'Hetzner API Token'
+        required: true
+      confirm_destroy:
+        description: 'Type "destroy" to confirm deletion of all resources'
+        required: true
+
+env:
+  HCLOUD_TOKEN: ${{ github.event.inputs.hetzner_token }}
+  TF_VAR_hcloud_token: ${{ github.event.inputs.hetzner_token }}
+
+jobs:
+  destroy-cluster:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.confirm_destroy == 'destroy'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.7
+
+      - name: Install Hetzner CLI
+        run: |
+          wget -O /tmp/hcloud_linux.tar.gz https://github.com/hetznercloud/cli/releases/latest/download/hcloud-linux-amd64.tar.gz
+          tar -xzf /tmp/hcloud_linux.tar.gz -C /tmp
+          sudo mv /tmp/hcloud /usr/local/bin/
+          hcloud version
+
+      - name: Download Terraform state
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: terraform-state
+          path: .
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keygen -y -f ~/.ssh/id_rsa > ~/.ssh/id_rsa.pub
+
+      - name: Initialize Terraform
+        run: terraform init
+
+      - name: List resources before destruction
+        run: |
+          echo "=== Current Hetzner Resources ==="
+          echo "Servers:"
+          hcloud server list
+          echo "Networks:"
+          hcloud network list
+          echo "Firewalls:"
+          hcloud firewall list
+
+      - name: Plan Terraform destroy
+        run: terraform plan -destroy -out=destroyplan
+
+      - name: Apply Terraform destroy
+        run: terraform apply -auto-approve destroyplan
+
+      - name: Verify destruction
+        run: |
+          echo "=== Verifying Resource Destruction ==="
+          echo "Servers:"
+          hcloud server list
+          echo "Networks:"
+          hcloud network list
+          echo "Firewalls:"
+          hcloud firewall list
+          
+          # Check if any resources still exist with our naming pattern
+          REMAINING_SERVERS=$(hcloud server list -o noheader | grep "k0s" | wc -l)
+          REMAINING_NETWORKS=$(hcloud network list -o noheader | grep "k0s" | wc -l)
+          REMAINING_FIREWALLS=$(hcloud firewall list -o noheader | grep "k0s" | wc -l)
+          
+          if [ "$REMAINING_SERVERS" -gt 0 ] || [ "$REMAINING_NETWORKS" -gt 0 ] || [ "$REMAINING_FIREWALLS" -gt 0 ]; then
+            echo "Warning: Some resources may not have been fully destroyed."
+            echo "Remaining servers: $REMAINING_SERVERS"
+            echo "Remaining networks: $REMAINING_NETWORKS"
+            echo "Remaining firewalls: $REMAINING_FIREWALLS"
+            
+            # Force deletion of any remaining resources with k0s in the name
+            if [ "$REMAINING_SERVERS" -gt 0 ]; then
+              echo "Force deleting remaining servers..."
+              hcloud server list -o noheader | grep "k0s" | awk '{print $1}' | xargs -r hcloud server delete
+            fi
+            
+            if [ "$REMAINING_NETWORKS" -gt 0 ]; then
+              echo "Force deleting remaining networks..."
+              hcloud network list -o noheader | grep "k0s" | awk '{print $1}' | xargs -r hcloud network delete
+            fi
+            
+            if [ "$REMAINING_FIREWALLS" -gt 0 ]; then
+              echo "Force deleting remaining firewalls..."
+              hcloud firewall list -o noheader | grep "k0s" | awk '{print $1}' | xargs -r hcloud firewall delete
+            fi
+          else
+            echo "All resources have been successfully destroyed!"
+          fi
+
+      - name: Save destruction report
+        uses: actions/upload-artifact@v4
+        with:
+          name: destruction-report
+          path: |
+            terraform.tfstate
+            terraform.tfstate.backup
