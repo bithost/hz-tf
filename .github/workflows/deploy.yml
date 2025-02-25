@@ -101,7 +101,7 @@ jobs:
             name: k0s-cluster
           spec:
             hosts:
-EOF
+          EOF
 
           i=0
           for ext_ip in $CONTROLLER_IPS; do
@@ -116,7 +116,7 @@ EOF
                 privateAddress: $priv_ip
                 installFlags:
                   - --kubelet-extra-args=--cloud-provider=external
-EOF
+            EOF
             i=$((i+1))
           done
 
@@ -133,7 +133,7 @@ EOF
                 privateAddress: $priv_ip
                 installFlags:
                   - --kubelet-extra-args=--cloud-provider=external
-EOF
+          EOF
             i=$((i+1))
           done
 
@@ -150,7 +150,7 @@ EOF
                     externalAddress: $LOADBALANCER_IP
                     sans:
                       - $LOADBALANCER_IP
-EOF
+          EOF
 
           for ext_ip in $CONTROLLER_IPS; do
             echo "                      - $ext_ip" >> k0sctl.yaml
@@ -185,7 +185,7 @@ EOF
                     type: etcd
                   telemetry:
                     enabled: true
-EOF
+          EOF
 
 
       - name: Deploy k0s cluster
