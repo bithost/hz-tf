@@ -1,0 +1,182 @@
+name: Deploy k0s Cluster on Hetzner
+
+on:
+  workflow_dispatch:
+    inputs:
+      hetzner_token:
+        description: 'Hetzner API Token'
+        required: true
+      ssh_key:
+        description: 'SSH Key Name in Hetzner Cloud'
+        required: true
+      server_type_controller:
+        description: 'Server type for controller node'
+        required: true
+        default: 'cx21'
+      server_type_worker:
+        description: 'Server type for worker nodes'
+        required: true
+        default: 'cx21'
+      location:
+        description: 'Hetzner location'
+        required: true
+        default: 'nbg1'
+      k0s_version:
+        description: 'k0s version'
+        required: true
+        default: 'v1.28.4+k0s.0'
+
+env:
+  HCLOUD_TOKEN: ${{ github.event.inputs.hetzner_token }}
+  TF_VAR_hcloud_token: ${{ github.event.inputs.hetzner_token }}
+  TF_VAR_ssh_key: ${{ github.event.inputs.ssh_key }}
+  TF_VAR_server_type_controller: ${{ github.event.inputs.server_type_controller }}
+  TF_VAR_server_type_worker: ${{ github.event.inputs.server_type_worker }}
+  TF_VAR_location: ${{ github.event.inputs.location }}
+  TF_VAR_k0s_version: ${{ github.event.inputs.k0s_version }}
+  TF_VAR_ssh_private_key_path: "~/.ssh/id_rsa"
+
+jobs:
+  deploy-cluster:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.7
+
+      - name: Install Hetzner CLI
+        run: |
+          wget -O /tmp/hcloud_linux.tar.gz https://github.com/hetznercloud/cli/releases/latest/download/hcloud-linux-amd64.tar.gz
+          tar -xzf /tmp/hcloud_linux.tar.gz -C /tmp
+          sudo mv /tmp/hcloud /usr/local/bin/
+          hcloud version
+
+      - name: Install k0sctl
+        run: |
+          curl -sSLf https://get.k0sproject.io/k0sctl.sh | sudo bash
+          k0sctl version
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keygen -y -f ~/.ssh/id_rsa > ~/.ssh/id_rsa.pub
+
+      - name: Initialize Terraform
+        run: terraform init
+
+      - name: Validate Terraform
+        run: terraform validate
+
+      - name: Create Terraform Plan
+        run: terraform plan -out=tfplan
+
+      - name: Apply Terraform
+        run: terraform apply -auto-approve tfplan
+
+      - name: Wait for servers to be ready
+        run: sleep 30
+
+      - name: Generate k0sctl.yaml configuration
+        run: |
+          CONTROLLER_IP=$(terraform output -raw controller_ip)
+          WORKER_IP_1=$(terraform output -json worker_ips | jq -r '.[0]')
+          WORKER_IP_2=$(terraform output -json worker_ips | jq -r '.[1]')
+          
+          cat > k0sctl.yaml << EOF
+          apiVersion: k0sctl.k0sproject.io/v1beta1
+          kind: Cluster
+          metadata:
+            name: k0s-hetzner-cluster
+          spec:
+            hosts:
+            - ssh:
+                address: ${CONTROLLER_IP}
+                user: root
+                keyPath: ~/.ssh/id_rsa
+              role: controller
+              installFlags:
+                - --enable-worker=false
+              k0s:
+                version: ${{ github.event.inputs.k0s_version }}
+                config:
+                  apiVersion: k0s.k0sproject.io/v1beta1
+                  kind: ClusterConfig
+                  metadata:
+                    name: k0s
+                  spec:
+                    telemetry:
+                      enabled: false
+                    network:
+                      provider: kuberouter
+                      podCIDR: 10.244.0.0/16
+                      serviceCIDR: 10.96.0.0/12
+                      kubeProxy:
+                        mode: ipvs
+            - ssh:
+                address: ${WORKER_IP_1}
+                user: root
+                keyPath: ~/.ssh/id_rsa
+              role: worker
+              k0s:
+                version: ${{ github.event.inputs.k0s_version }}
+            - ssh:
+                address: ${WORKER_IP_2}
+                user: root
+                keyPath: ~/.ssh/id_rsa
+              role: worker  
+              k0s:
+                version: ${{ github.event.inputs.k0s_version }}
+          EOF
+
+      - name: Deploy k0s cluster
+        run: k0sctl apply --config k0sctl.yaml
+
+      - name: Get kubeconfig
+        run: |
+          k0sctl kubeconfig --config k0sctl.yaml > kubeconfig
+
+      - name: Test cluster
+        run: |
+          export KUBECONFIG=./kubeconfig
+          kubectl get nodes -o wide
+          kubectl get pods --all-namespaces
+
+      - name: Save kubeconfig as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kubeconfig
+          path: kubeconfig
+
+      - name: Save Terraform state
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-state
+          path: |
+            terraform.tfstate
+            terraform.tfstate.backup
+
+      - name: Create cluster info file
+        run: |
+          CONTROLLER_IP=$(terraform output -raw controller_ip)
+          WORKER_IPS=$(terraform output -json worker_ips)
+          NETWORK_ID=$(terraform output -raw network_id)
+          
+          cat > cluster-info.txt << EOF
+          Controller Node: ${CONTROLLER_IP}
+          Worker Nodes: ${WORKER_IPS}
+          Hetzner Network ID: ${NETWORK_ID}
+          K0s Version: ${{ github.event.inputs.k0s_version }}
+          Deployment Time: $(date)
+          EOF
+          
+      - name: Save cluster info
+        uses: actions/upload-artifact@v4
+        with:
+          name: cluster-info
+          path: cluster-info.txt
