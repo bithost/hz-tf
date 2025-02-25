@@ -57,8 +57,10 @@ jobs:
 
       - name: Install k0sctl
         run: |
-          curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh | sudo bash
-          brew install k0sproject/tap/k0sctl
+          # Download the latest k0sctl binary directly
+          curl -LO https://github.com/k0sproject/k0sctl/releases/latest/download/k0sctl-linux-x64
+          chmod +x k0sctl-linux-x64
+          sudo mv k0sctl-linux-x64 /usr/local/bin/k0sctl
           k0sctl version
 
       - name: Setup SSH key
@@ -81,7 +83,7 @@ jobs:
         run: terraform apply -auto-approve tfplan
 
       - name: Wait for servers to be ready
-        run: sleep 30
+        run: sleep 60  # Increased wait time to ensure servers are fully ready
 
       - name: Generate k0sctl.yaml configuration
         run: |
@@ -100,6 +102,7 @@ jobs:
                 address: ${CONTROLLER_IP}
                 user: root
                 keyPath: ~/.ssh/id_rsa
+                port: 22
               role: controller
               installFlags:
                 - --enable-worker=false
@@ -123,6 +126,7 @@ jobs:
                 address: ${WORKER_IP_1}
                 user: root
                 keyPath: ~/.ssh/id_rsa
+                port: 22
               role: worker
               k0s:
                 version: ${{ github.event.inputs.k0s_version }}
@@ -130,21 +134,23 @@ jobs:
                 address: ${WORKER_IP_2}
                 user: root
                 keyPath: ~/.ssh/id_rsa
+                port: 22
               role: worker  
               k0s:
                 version: ${{ github.event.inputs.k0s_version }}
           EOF
 
       - name: Deploy k0s cluster
-        run: k0sctl apply --config k0sctl.yaml
+        run: k0sctl apply --config k0sctl.yaml --debug
 
       - name: Get kubeconfig
         run: |
           k0sctl kubeconfig --config k0sctl.yaml > kubeconfig
 
-      - name: Test cluster
+      - name: Test cluster connection
         run: |
           export KUBECONFIG=./kubeconfig
+          kubectl cluster-info
           kubectl get nodes -o wide
           kubectl get pods --all-namespaces
 
