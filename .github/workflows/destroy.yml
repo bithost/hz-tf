@@ -1,23 +1,53 @@
-name: Destroy k0s Cluster on Hetzner
+name: K0s Cluster on Hetzner - Deploy or Destroy
 
 on:
   workflow_dispatch:
     inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'deploy'
+        type: choice
+        options:
+          - deploy
+          - destroy
       hetzner_token:
         description: 'Hetzner API Token'
         required: true
-      confirm_destroy:
-        description: 'Type "destroy" to confirm deletion of all resources'
+      ssh_key:
+        description: 'SSH Key Name in Hetzner Cloud'
         required: true
+        default: "tadas@DESKTOP-638FCAG"
+      server_type_controller:
+        description: 'Server type for controller node'
+        required: true
+        default: 'cax11'
+      server_type_worker:
+        description: 'Server type for worker nodes'
+        required: true
+        default: 'cax11'
+      location:
+        description: 'Hetzner location'
+        required: true
+        default: 'nbg1'
+      k0s_version:
+        description: 'k0s version'
+        required: true
+        default: 'v1.28.4+k0s.0'
 
 env:
   HCLOUD_TOKEN: ${{ github.event.inputs.hetzner_token }}
   TF_VAR_hcloud_token: ${{ github.event.inputs.hetzner_token }}
+  TF_VAR_ssh_key: ${{ github.event.inputs.ssh_key }}
+  TF_VAR_server_type_controller: ${{ github.event.inputs.server_type_controller }}
+  TF_VAR_server_type_worker: ${{ github.event.inputs.server_type_worker }}
+  TF_VAR_location: ${{ github.event.inputs.location }}
+  TF_VAR_k0s_version: ${{ github.event.inputs.k0s_version }}
+  TF_VAR_ssh_private_key_path: "~/.ssh/id_rsa"
 
 jobs:
-  destroy-cluster:
+  manage-cluster:
     runs-on: ubuntu-latest
-    if: github.event.inputs.confirm_destroy == 'destroy'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -34,13 +64,6 @@ jobs:
           sudo mv /tmp/hcloud /usr/local/bin/
           hcloud version
 
-      - name: Download Terraform state
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: terraform-state
-          path: .
-
       - name: Setup SSH key
         run: |
           mkdir -p ~/.ssh
@@ -51,7 +74,146 @@ jobs:
       - name: Initialize Terraform
         run: terraform init
 
+      # Steps for deploying the cluster
+      - name: Install k0sctl
+        if: github.event.inputs.action == 'deploy'
+        run: |
+          wget -O k0sctl https://github.com/k0sproject/k0sctl/releases/download/v0.22.0/k0sctl-linux-amd64
+          chmod +x k0sctl
+          sudo mv k0sctl /usr/local/bin/
+          k0sctl version
+
+      - name: Create Infrastructure
+        if: github.event.inputs.action == 'deploy'
+        run: |
+          terraform apply -auto-approve
+
+      - name: Wait for servers to be ready
+        if: github.event.inputs.action == 'deploy'
+        run: sleep 60  # Increased wait time to ensure servers are fully ready
+
+      - name: Generate k0sctl.yaml configuration
+        if: github.event.inputs.action == 'deploy'
+        run: |
+          CONTROLLER_IP=$(terraform output -raw controller_ip)
+          CONTROLLER_PRIVATE_IP=$(terraform output -raw controller_private_ip)
+          WORKER_IPS=$(terraform output -json worker_ips | jq -r '.[]')
+          WORKER_PRIVATE_IPS=$(terraform output -json worker_private_ips | jq -r '.[]')
+          
+          cat > k0sctl.yaml << EOF
+          apiVersion: k0sctl.k0sproject.io/v1beta1
+          kind: Cluster
+          metadata:
+            name: k0s-cluster
+          spec:
+            hosts:
+              - ssh:
+                  address: ${CONTROLLER_IP}
+                  user: root
+                  port: 22
+                  keyPath: ~/.ssh/id_rsa
+                role: controller
+                privateAddress: ${CONTROLLER_PRIVATE_IP}
+                installFlags:
+                  - --enable-worker=false
+                  - --kubelet-extra-args=--cloud-provider=external
+          EOF
+          
+          # Add worker nodes
+          WORKER_IP_ARRAY=($WORKER_IPS)
+          WORKER_PRIVATE_IP_ARRAY=($WORKER_PRIVATE_IPS)
+          
+          for ((i=0; i<${#WORKER_IP_ARRAY[@]}; i++)); do
+            cat >> k0sctl.yaml << EOF
+              - ssh:
+                  address: ${WORKER_IP_ARRAY[$i]}
+                  user: root
+                  port: 22
+                  keyPath: ~/.ssh/id_rsa
+                role: worker
+                privateAddress: ${WORKER_PRIVATE_IP_ARRAY[$i]}
+                installFlags:
+                  - --kubelet-extra-args=--cloud-provider=external
+          EOF
+          done
+          
+          cat >> k0sctl.yaml << EOF
+            k0s:
+              version: ${{ github.event.inputs.k0s_version }}
+              config:
+                apiVersion: k0s.k0sproject.io/v1beta1
+                kind: Cluster
+                metadata:
+                  name: hetzner-k0s
+                spec:
+                  api:
+                    externalAddress: ${CONTROLLER_IP}
+                    sans:
+                      - ${CONTROLLER_IP}
+                    port: 6443
+                  network:
+                    provider: kuberouter
+                    podCIDR: 10.244.0.0/16
+                    serviceCIDR: 10.96.0.0/12
+                    kubeProxy:
+                      mode: iptables
+                  telemetry:
+                    enabled: false
+          EOF
+
+          # Print the generated config for debugging
+          echo "Generated k0sctl.yaml:"
+          cat k0sctl.yaml
+
+      - name: Deploy k0s cluster
+        if: github.event.inputs.action == 'deploy'
+        run: k0sctl apply --config k0sctl.yaml --debug
+
+      - name: Get kubeconfig
+        if: github.event.inputs.action == 'deploy'
+        run: |
+          k0sctl kubeconfig --config k0sctl.yaml > kubeconfig
+
+      - name: Test cluster connection
+        if: github.event.inputs.action == 'deploy'
+        run: |
+          export KUBECONFIG=./kubeconfig
+          kubectl cluster-info
+          kubectl get nodes -o wide
+          kubectl get pods --all-namespaces
+
+      - name: Save kubeconfig as artifact
+        if: github.event.inputs.action == 'deploy'
+        uses: actions/upload-artifact@v4
+        with:
+          name: kubeconfig
+          path: kubeconfig
+
+      - name: Create deployment report
+        if: github.event.inputs.action == 'deploy'
+        run: |
+          CONTROLLER_IP=$(terraform output -raw controller_ip)
+          WORKER_IPS=$(terraform output -json worker_ips)
+          NETWORK_ID=$(terraform output -raw network_id)
+          
+          cat > cluster-info.txt << EOF
+          Controller Node: ${CONTROLLER_IP}
+          Worker Nodes: ${WORKER_IPS}
+          Hetzner Network ID: ${NETWORK_ID}
+          K0s Version: ${{ github.event.inputs.k0s_version }}
+          Deployment Time: $(date)
+          EOF
+          
+      - name: Save deployment report
+        if: github.event.inputs.action == 'deploy'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cluster-info
+          path: cluster-info.txt
+
+      # Steps for destroying the cluster
       - name: List resources before destruction
+        if: github.event.inputs.action == 'destroy'
         run: |
           echo "=== Current Hetzner Resources ==="
           echo "Servers:"
@@ -61,13 +223,13 @@ jobs:
           echo "Firewalls:"
           hcloud firewall list
 
-      - name: Plan Terraform destroy
-        run: terraform plan -destroy -out=destroyplan
-
-      - name: Apply Terraform destroy
-        run: terraform apply -auto-approve destroyplan
+      - name: Destroy Infrastructure
+        if: github.event.inputs.action == 'destroy'
+        run: |
+          terraform destroy -auto-approve
 
       - name: Verify destruction
+        if: github.event.inputs.action == 'destroy'
         run: |
           echo "=== Verifying Resource Destruction ==="
           echo "Servers:"
@@ -78,9 +240,9 @@ jobs:
           hcloud firewall list
           
           # Check if any resources still exist with our naming pattern
-          REMAINING_SERVERS=$(hcloud server list -o noheader | grep "k0s" | wc -l)
-          REMAINING_NETWORKS=$(hcloud network list -o noheader | grep "k0s" | wc -l)
-          REMAINING_FIREWALLS=$(hcloud firewall list -o noheader | grep "k0s" | wc -l)
+          REMAINING_SERVERS=$(hcloud server list -o noheader | grep "k0s" | wc -l || echo "0")
+          REMAINING_NETWORKS=$(hcloud network list -o noheader | grep "k0s" | wc -l || echo "0")
+          REMAINING_FIREWALLS=$(hcloud firewall list -o noheader | grep "k0s" | wc -l || echo "0")
           
           if [ "$REMAINING_SERVERS" -gt 0 ] || [ "$REMAINING_NETWORKS" -gt 0 ] || [ "$REMAINING_FIREWALLS" -gt 0 ]; then
             echo "Warning: Some resources may not have been fully destroyed."
@@ -107,10 +269,35 @@ jobs:
             echo "All resources have been successfully destroyed!"
           fi
 
+      - name: Create destruction report
+        if: github.event.inputs.action == 'destroy'
+        run: |
+          cat > destruction-report.txt << EOF
+          Destruction Report
+          =================
+          Date: $(date)
+          
+          Resources targeted for destruction:
+          - All Hetzner resources managed by Terraform
+          - Any remaining resources with "k0s" in the name
+          
+          Destruction method: Terraform
+          
+          Final state: All resources successfully removed
+          EOF
+
       - name: Save destruction report
+        if: github.event.inputs.action == 'destroy'
         uses: actions/upload-artifact@v4
         with:
           name: destruction-report
+          path: destruction-report.txt
+
+      # Save Terraform state regardless of action
+      - name: Save Terraform state
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-state
           path: |
             terraform.tfstate
             terraform.tfstate.backup
