@@ -9,14 +9,15 @@ on:
       ssh_key:
         description: 'SSH Key Name in Hetzner Cloud'
         required: true
+        default: "tadas@DESKTOP-638FCAG"
       server_type_controller:
         description: 'Server type for controller node'
         required: true
-        default: 'cx21'
+        default: 'cax11'
       server_type_worker:
         description: 'Server type for worker nodes'
         required: true
-        default: 'cx21'
+        default: 'cax11'
       location:
         description: 'Hetzner location'
         required: true
