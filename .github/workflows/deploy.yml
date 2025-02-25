@@ -9,15 +9,14 @@ on:
       ssh_key:
         description: 'SSH Key Name in Hetzner Cloud'
         required: true
-        default: 'tadas@DESKTOP-638FCAG'
       server_type_controller:
         description: 'Server type for controller node'
         required: true
-        default: 'cax11'
+        default: 'cx21'
       server_type_worker:
         description: 'Server type for worker nodes'
         required: true
-        default: 'cax11'
+        default: 'cx21'
       location:
         description: 'Hetzner location'
         required: true
@@ -88,11 +87,10 @@ jobs:
 
       - name: Generate k0sctl.yaml configuration
         run: |
-          CONTROLLER_IPS=$(terraform output -json controller_ips | jq -r '.[]')
+          CONTROLLER_IP=$(terraform output -raw controller_ip)
+          CONTROLLER_PRIVATE_IP=$(terraform output -raw controller_private_ip)
           WORKER_IPS=$(terraform output -json worker_ips | jq -r '.[]')
-          CONTROLLER_PRIVATE_IPS=$(terraform output -json controller_private_ips | jq -r '.[]')
           WORKER_PRIVATE_IPS=$(terraform output -json worker_private_ips | jq -r '.[]')
-          LOADBALANCER_IP=$(terraform output -raw loadbalancer_ip)
           
           cat > k0sctl.yaml << EOF
           apiVersion: k0sctl.k0sproject.io/v1beta1
@@ -101,42 +99,36 @@ jobs:
             name: k0s-cluster
           spec:
             hosts:
-          EOF
-
-          i=0
-          for ext_ip in $CONTROLLER_IPS; do
-            priv_ip=$(echo $CONTROLLER_PRIVATE_IPS | jq -r ".[$i]")
-            cat >> k0sctl.yaml << EOF
               - ssh:
-                  address: $ext_ip
+                  address: ${CONTROLLER_IP}
                   user: root
                   port: 22
                   keyPath: ~/.ssh/id_rsa
-                role: controller+worker
-                privateAddress: $priv_ip
+                role: controller
+                privateAddress: ${CONTROLLER_PRIVATE_IP}
                 installFlags:
+                  - --enable-worker=false
                   - --kubelet-extra-args=--cloud-provider=external
-            EOF
-            i=$((i+1))
-          done
-
-          i=0
-          for ext_ip in $WORKER_IPS; do
-            priv_ip=$(echo $WORKER_PRIVATE_IPS | jq -r ".[$i]")
+          EOF
+          
+          # Add worker nodes
+          WORKER_IP_ARRAY=($WORKER_IPS)
+          WORKER_PRIVATE_IP_ARRAY=($WORKER_PRIVATE_IPS)
+          
+          for ((i=0; i<${#WORKER_IP_ARRAY[@]}; i++)); do
             cat >> k0sctl.yaml << EOF
               - ssh:
-                  address: $ext_ip
+                  address: ${WORKER_IP_ARRAY[$i]}
                   user: root
                   port: 22
                   keyPath: ~/.ssh/id_rsa
                 role: worker
-                privateAddress: $priv_ip
+                privateAddress: ${WORKER_PRIVATE_IP_ARRAY[$i]}
                 installFlags:
                   - --kubelet-extra-args=--cloud-provider=external
           EOF
-            i=$((i+1))
           done
-
+          
           cat >> k0sctl.yaml << EOF
             k0s:
               version: ${{ github.event.inputs.k0s_version }}
@@ -147,46 +139,23 @@ jobs:
                   name: hetzner-k0s
                 spec:
                   api:
-                    externalAddress: $LOADBALANCER_IP
+                    externalAddress: ${CONTROLLER_IP}
                     sans:
-                      - $LOADBALANCER_IP
-          EOF
-
-          for ext_ip in $CONTROLLER_IPS; do
-            echo "                      - $ext_ip" >> k0sctl.yaml
-          done
-
-          cat >> k0sctl.yaml << EOF
-                    k0sApiPort: 9443
+                      - ${CONTROLLER_IP}
                     port: 6443
-                  installConfig:
-                    users:
-                      etcdUser: etcd
-                      kineUser: kube-apiserver
-                      konnectivityUser: konnectivity-server
-                      kubeAPIserverUser: kube-apiserver
-                      kubeSchedulerUser: kube-scheduler
-                  konnectivity:
-                    adminPort: 8133
-                    agentPort: 8132
                   network:
-                    kubeProxy:
-                      disabled: false
-                      mode: iptables
-                    kuberouter:
-                      autoMTU: true
-                      mtu: 0
-                      peerRouterASNs: ""
-                      peerRouterIPs: ""
-                    podCIDR: 10.244.0.0/16
                     provider: kuberouter
+                    podCIDR: 10.244.0.0/16
                     serviceCIDR: 10.96.0.0/12
-                  storage:
-                    type: etcd
+                    kubeProxy:
+                      mode: iptables
                   telemetry:
-                    enabled: true
+                    enabled: false
           EOF
 
+          # Print the generated config for debugging
+          echo "Generated k0sctl.yaml:"
+          cat k0sctl.yaml
 
       - name: Deploy k0s cluster
         run: k0sctl apply --config k0sctl.yaml --debug
