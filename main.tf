@@ -96,7 +96,7 @@ data "hcloud_ssh_key" "existing_key" {
 
 resource "hcloud_server" "controller" {
   name         = "k0s-controller"
-  image        = "ubuntu-22.04"
+  image        = var.ubuntu_version  # Now using the variable
   server_type  = var.server_type_controller
   location     = var.location
   ssh_keys     = [data.hcloud_ssh_key.existing_key.id]
@@ -140,7 +140,7 @@ resource "hcloud_server_network" "controller_network" {
 resource "hcloud_server" "worker" {
   count        = 2
   name         = "k0s-worker-${count.index + 1}"
-  image        = "ubuntu-22.04"
+  image        = var.ubuntu_version  # Now using the variable
   server_type  = var.server_type_worker
   location     = var.location
   ssh_keys     = [data.hcloud_ssh_key.existing_key.id]

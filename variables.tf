@@ -15,10 +15,10 @@ variable "ssh_private_key_path" {
   default     = "~/.ssh/id_rsa"
 }
 
-variable "ssh_public_key_path" {
-  description = "Path to SSH public key file"
+variable "ubuntu_version" {
+  description = "Ubuntu version to use for the servers"
   type        = string
-  default     = "~/.ssh/id_rsa.pub"
+  default     = "ubuntu-22.04"
 }
 
 variable "server_type_controller" {
