@@ -78,6 +78,9 @@ jobs:
           tar -xzf /tmp/hcloud_linux.tar.gz -C /tmp
           sudo mv /tmp/hcloud /usr/local/bin/
           hcloud version
+      - name: Clear SSH known hosts
+        run: rm -f ~/.ssh/known_hosts
+
 
       - name: Setup SSH key
         run: |
