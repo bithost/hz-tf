@@ -59,6 +59,13 @@ jobs:
   manage-cluster:
     runs-on: self-hosted
     steps:
+      - name: Clean workspace
+        run: |
+          echo "Cleaning workspace before starting..."
+          # Remove all files from the workspace except .git
+          find . -mindepth 1 -maxdepth 1 -not -name '.git' -exec rm -rf {} +
+          # Now checkout fresh code
+          
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -80,6 +87,7 @@ jobs:
           mv /tmp/hcloud /usr/local/bin/ || sudo mv /tmp/hcloud /usr/local/bin/
           hcloud version
         continue-on-error: true
+
 
       - name: Setup SSH key
         run: |
