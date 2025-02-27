@@ -95,7 +95,7 @@ jobs:
 
       - uses: azure/setup-kubectl@v4
         with:
-          version: 'default' # default is latest stable
+          version: 'v1.32.2' # default is latest stable
         id: install
 
       # Steps for deploying the cluster
