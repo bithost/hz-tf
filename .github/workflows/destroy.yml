@@ -52,6 +52,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Download Encrypted Terraform State
+        uses: badgerhobbs/terraform-state@v2
+        with:
+          encryption_key: ${{ secrets.STATE_ENCRYPTION_PASSPHRASE }}
+          operation: download
+          location: artifact
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true # Handle initial runs
+
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
         with:
@@ -83,11 +92,29 @@ jobs:
           sudo mv k0sctl /usr/local/bin/
           k0sctl version
 
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
+
       - name: Create Infrastructure
         if: github.event.inputs.action == 'deploy'
         run: |
-          terraform apply -auto-approve
+          terraform apply -auto-approve tfplan
 
+      - name: Destroy Infrastructure
+        if: github.event.inputs.action == 'destroy'
+        run: |
+          terraform destroy -auto-approve
+          
+      # Encrypt and upload Terraform state after any action
+      - name: Encrypt and Upload Terraform State
+        uses: badgerhobbs/terraform-state@v2
+        with:
+          encryption_key: ${{ secrets.STATE_ENCRYPTION_PASSPHRASE }}
+          operation: upload
+          location: artifact
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Continue with deployment steps if deploying
       - name: Wait for servers to be ready
         if: github.event.inputs.action == 'deploy'
         run: sleep 60  # Increased wait time to ensure servers are fully ready
@@ -161,10 +188,6 @@ jobs:
                     enabled: false
           EOF
 
-          # Print the generated config for debugging
-          echo "Generated k0sctl.yaml:"
-          cat k0sctl.yaml
-
       - name: Deploy k0s cluster
         if: github.event.inputs.action == 'deploy'
         run: k0sctl apply --config k0sctl.yaml --debug
@@ -182,12 +205,22 @@ jobs:
           kubectl get nodes -o wide
           kubectl get pods --all-namespaces
 
-      - name: Save kubeconfig as artifact
+      - name: Encrypt kubeconfig
+        if: github.event.inputs.action == 'deploy'
+        run: |
+          # Install gpg
+          sudo apt-get update && sudo apt-get install -y gnupg
+          
+          # Encrypt kubeconfig
+          echo "${{ secrets.STATE_ENCRYPTION_PASSPHRASE }}" | gpg --batch --yes --passphrase-fd 0 -c kubeconfig
+          mv kubeconfig.gpg encrypted-kubeconfig.gpg
+
+      - name: Save encrypted kubeconfig as artifact
         if: github.event.inputs.action == 'deploy'
         uses: actions/upload-artifact@v4
         with:
-          name: kubeconfig
-          path: kubeconfig
+          name: encrypted-kubeconfig
+          path: encrypted-kubeconfig.gpg
 
       - name: Create deployment report
         if: github.event.inputs.action == 'deploy'
@@ -202,32 +235,25 @@ jobs:
           Hetzner Network ID: ${NETWORK_ID}
           K0s Version: ${{ github.event.inputs.k0s_version }}
           Deployment Time: $(date)
-          EOF
           
-      - name: Save deployment report
+          To decrypt the kubeconfig, run:
+          echo "YOUR_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 -d encrypted-kubeconfig.gpg > kubeconfig
+          EOF
+
+      - name: Encrypt deployment report
+        if: github.event.inputs.action == 'deploy'
+        run: |
+          echo "${{ secrets.STATE_ENCRYPTION_PASSPHRASE }}" | gpg --batch --yes --passphrase-fd 0 -c cluster-info.txt
+          mv cluster-info.txt.gpg encrypted-cluster-info.gpg
+
+      - name: Save encrypted deployment report
         if: github.event.inputs.action == 'deploy'
         uses: actions/upload-artifact@v4
         with:
-          name: cluster-info
-          path: cluster-info.txt
+          name: encrypted-cluster-info
+          path: encrypted-cluster-info.gpg
 
-      # Steps for destroying the cluster
-      - name: List resources before destruction
-        if: github.event.inputs.action == 'destroy'
-        run: |
-          echo "=== Current Hetzner Resources ==="
-          echo "Servers:"
-          hcloud server list
-          echo "Networks:"
-          hcloud network list
-          echo "Firewalls:"
-          hcloud firewall list
-
-      - name: Destroy Infrastructure
-        if: github.event.inputs.action == 'destroy'
-        run: |
-          terraform destroy -auto-approve
-
+      # Verify destruction if destroying
       - name: Verify destruction
         if: github.event.inputs.action == 'destroy'
         run: |
@@ -286,18 +312,32 @@ jobs:
           Final state: All resources successfully removed
           EOF
 
-      - name: Save destruction report
+      - name: Encrypt destruction report
+        if: github.event.inputs.action == 'destroy'
+        run: |
+          echo "${{ secrets.STATE_ENCRYPTION_PASSPHRASE }}" | gpg --batch --yes --passphrase-fd 0 -c destruction-report.txt
+          mv destruction-report.txt.gpg encrypted-destruction-report.gpg
+
+      - name: Save encrypted destruction report
         if: github.event.inputs.action == 'destroy'
         uses: actions/upload-artifact@v4
         with:
-          name: destruction-report
-          path: destruction-report.txt
+          name: encrypted-destruction-report
+          path: encrypted-destruction-report.gpg
 
-      # Save Terraform state regardless of action
-      - name: Save Terraform state
-        uses: actions/upload-artifact@v4
+      # Run security checks with Checkov
+      - name: Run Checkov security scan
+        id: checkov
+        uses: bridgecrewio/checkov-action@master
         with:
-          name: terraform-state
-          path: |
-            terraform.tfstate
-            terraform.tfstate.backup
+          framework: terraform
+          output_format: cli,sarif
+          output_file_path: console,results.sarif
+        continue-on-error: true
+
+      - name: Upload Checkov results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: checkov-results
+          path: results.sarif
