@@ -18,6 +18,11 @@ output "worker_private_ips" {
   value       = [for worker in hcloud_server.worker : tolist(worker.network)[0].ip]
 }
 
+output "loadbalancer_ip" {
+  description = "Public IP address of the load balancer"
+  value       = hcloud_load_balancer.k0s_load_balancer.ipv4
+}
+
 output "network_id" {
   description = "ID of the Hetzner network"
   value       = hcloud_network.k0s_network.id
@@ -25,5 +30,5 @@ output "network_id" {
 
 output "k0s_connection_string" {
   description = "Connection string for accessing the k0s cluster"
-  value       = "https://${hcloud_server.controller.ipv4_address}:6443"
+  value       = "https://${hcloud_load_balancer.k0s_load_balancer.ipv4}:6443"
 }

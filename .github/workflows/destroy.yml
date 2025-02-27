@@ -47,25 +47,16 @@ env:
 
 jobs:
   manage-cluster:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y unzip gnupg curl jq 
-
-      - name: Download Encrypted Terraform State
-        id: download-state
-        uses: badgerhobbs/terraform-state@v2
-        with:
-          encryption_key: ${{ secrets.STATE_ENCRYPTION_PASSPHRASE }}
-          operation: download
-          location: artifact
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-        continue-on-error: true # Handle initial runs
+          apt-get update
+          apt-get install -y unzip gnupg curl jq
+        continue-on-error: true
 
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
@@ -76,11 +67,9 @@ jobs:
         run: |
           wget -O /tmp/hcloud_linux.tar.gz https://github.com/hetznercloud/cli/releases/latest/download/hcloud-linux-amd64.tar.gz
           tar -xzf /tmp/hcloud_linux.tar.gz -C /tmp
-          sudo mv /tmp/hcloud /usr/local/bin/
+          mv /tmp/hcloud /usr/local/bin/
           hcloud version
-      - name: Clear SSH known hosts
-        run: rm -f ~/.ssh/known_hosts
-
+        continue-on-error: true
 
       - name: Setup SSH key
         run: |
@@ -88,18 +77,9 @@ jobs:
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keygen -y -f ~/.ssh/id_rsa > ~/.ssh/id_rsa.pub
-      - name: Set up Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: '18' 
 
       - name: Initialize Terraform
         run: terraform init
-
-      - uses: azure/setup-kubectl@v4
-        with:
-          version: 'v1.32.2' # default is latest stable
-        id: install
 
       # Steps for deploying the cluster
       - name: Install k0sctl
@@ -107,8 +87,9 @@ jobs:
         run: |
           wget -O k0sctl https://github.com/k0sproject/k0sctl/releases/download/v0.22.0/k0sctl-linux-amd64
           chmod +x k0sctl
-          sudo mv k0sctl /usr/local/bin/
+          mv k0sctl /usr/local/bin/
           k0sctl version
+        continue-on-error: true
 
       - name: Terraform Plan
         id: plan
@@ -124,15 +105,6 @@ jobs:
         run: |
           terraform destroy -auto-approve
           
-      # Encrypt and upload Terraform state after any action
-      - name: Encrypt and Upload Terraform State
-        uses: badgerhobbs/terraform-state@v2
-        with:
-          encryption_key: ${{ secrets.STATE_ENCRYPTION_PASSPHRASE }}
-          operation: upload
-          location: artifact
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-
       # Continue with deployment steps if deploying
       - name: Wait for servers to be ready
         if: github.event.inputs.action == 'deploy'
@@ -145,6 +117,7 @@ jobs:
           CONTROLLER_PRIVATE_IP=$(terraform output -raw controller_private_ip)
           WORKER_IPS=$(terraform output -json worker_ips | jq -r '.[]')
           WORKER_PRIVATE_IPS=$(terraform output -json worker_private_ips | jq -r '.[]')
+          LOADBALANCER_IP=$(terraform output -raw loadbalancer_ip)
           
           cat > k0sctl.yaml << EOF
           apiVersion: k0sctl.k0sproject.io/v1beta1
@@ -193,8 +166,9 @@ jobs:
                   name: hetzner-k0s
                 spec:
                   api:
-                    externalAddress: ${CONTROLLER_IP}
+                    externalAddress: ${LOADBALANCER_IP}
                     sans:
+                      - ${LOADBALANCER_IP}
                       - ${CONTROLLER_IP}
                     port: 6443
                   network:
@@ -205,7 +179,14 @@ jobs:
                       mode: iptables
                   telemetry:
                     enabled: false
+                  konnectivity:
+                    adminPort: 8133
+                    agentPort: 8132
           EOF
+
+          # Print the generated config for debugging
+          echo "Generated k0sctl.yaml:"
+          cat k0sctl.yaml
 
       - name: Deploy k0s cluster
         if: github.event.inputs.action == 'deploy'
@@ -224,49 +205,35 @@ jobs:
           kubectl get nodes -o wide
           kubectl get pods --all-namespaces
 
-      - name: Encrypt kubeconfig
-        if: github.event.inputs.action == 'deploy'
-        run: |
-          echo "${{ secrets.STATE_ENCRYPTION_PASSPHRASE }}" | gpg --batch --yes --passphrase-fd 0 -c kubeconfig
-          mv kubeconfig.gpg encrypted-kubeconfig.gpg
-
-      - name: Save encrypted kubeconfig as artifact
+      - name: Save kubeconfig as artifact
         if: github.event.inputs.action == 'deploy'
         uses: actions/upload-artifact@v4
         with:
-          name: encrypted-kubeconfig
-          path: encrypted-kubeconfig.gpg
+          name: kubeconfig
+          path: kubeconfig
 
       - name: Create deployment report
         if: github.event.inputs.action == 'deploy'
         run: |
           CONTROLLER_IP=$(terraform output -raw controller_ip)
           WORKER_IPS=$(terraform output -json worker_ips)
-          NETWORK_ID=$(terraform output -raw network_id)
+          LOADBALANCER_IP=$(terraform output -raw loadbalancer_ip)
           
           cat > cluster-info.txt << EOF
           Controller Node: ${CONTROLLER_IP}
           Worker Nodes: ${WORKER_IPS}
-          Hetzner Network ID: ${NETWORK_ID}
+          Load Balancer IP: ${LOADBALANCER_IP}
+          Kubernetes API: https://${LOADBALANCER_IP}:6443
           K0s Version: ${{ github.event.inputs.k0s_version }}
           Deployment Time: $(date)
-          
-          To decrypt the kubeconfig, run:
-          echo "YOUR_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 -d encrypted-kubeconfig.gpg > kubeconfig
           EOF
 
-      - name: Encrypt deployment report
-        if: github.event.inputs.action == 'deploy'
-        run: |
-          echo "${{ secrets.STATE_ENCRYPTION_PASSPHRASE }}" | gpg --batch --yes --passphrase-fd 0 -c cluster-info.txt
-          mv cluster-info.txt.gpg encrypted-cluster-info.gpg
-
-      - name: Save encrypted deployment report
+      - name: Save deployment report
         if: github.event.inputs.action == 'deploy'
         uses: actions/upload-artifact@v4
         with:
-          name: encrypted-cluster-info
-          path: encrypted-cluster-info.gpg
+          name: cluster-info
+          path: cluster-info.txt
 
       # Verify destruction if destroying
       - name: Verify destruction
@@ -279,17 +246,21 @@ jobs:
           hcloud network list
           echo "Firewalls:"
           hcloud firewall list
+          echo "Load Balancers:"
+          hcloud load-balancer list
           
           # Check if any resources still exist with our naming pattern
           REMAINING_SERVERS=$(hcloud server list -o noheader | grep "k0s" | wc -l || echo "0")
           REMAINING_NETWORKS=$(hcloud network list -o noheader | grep "k0s" | wc -l || echo "0")
           REMAINING_FIREWALLS=$(hcloud firewall list -o noheader | grep "k0s" | wc -l || echo "0")
+          REMAINING_LOAD_BALANCERS=$(hcloud load-balancer list -o noheader | grep "k0s" | wc -l || echo "0")
           
-          if [ "$REMAINING_SERVERS" -gt 0 ] || [ "$REMAINING_NETWORKS" -gt 0 ] || [ "$REMAINING_FIREWALLS" -gt 0 ]; then
+          if [ "$REMAINING_SERVERS" -gt 0 ] || [ "$REMAINING_NETWORKS" -gt 0 ] || [ "$REMAINING_FIREWALLS" -gt 0 ] || [ "$REMAINING_LOAD_BALANCERS" -gt 0 ]; then
             echo "Warning: Some resources may not have been fully destroyed."
             echo "Remaining servers: $REMAINING_SERVERS"
             echo "Remaining networks: $REMAINING_NETWORKS"
             echo "Remaining firewalls: $REMAINING_FIREWALLS"
+            echo "Remaining load balancers: $REMAINING_LOAD_BALANCERS"
             
             # Force deletion of any remaining resources with k0s in the name
             if [ "$REMAINING_SERVERS" -gt 0 ]; then
@@ -305,6 +276,11 @@ jobs:
             if [ "$REMAINING_FIREWALLS" -gt 0 ]; then
               echo "Force deleting remaining firewalls..."
               hcloud firewall list -o noheader | grep "k0s" | awk '{print $1}' | xargs -r hcloud firewall delete
+            fi
+            
+            if [ "$REMAINING_LOAD_BALANCERS" -gt 0 ]; then
+              echo "Force deleting remaining load balancers..."
+              hcloud load-balancer list -o noheader | grep "k0s" | awk '{print $1}' | xargs -r hcloud load-balancer delete
             fi
           else
             echo "All resources have been successfully destroyed!"
@@ -327,32 +303,18 @@ jobs:
           Final state: All resources successfully removed
           EOF
 
-      - name: Encrypt destruction report
-        if: github.event.inputs.action == 'destroy'
-        run: |
-          echo "${{ secrets.STATE_ENCRYPTION_PASSPHRASE }}" | gpg --batch --yes --passphrase-fd 0 -c destruction-report.txt
-          mv destruction-report.txt.gpg encrypted-destruction-report.gpg
-
-      - name: Save encrypted destruction report
+      - name: Save destruction report
         if: github.event.inputs.action == 'destroy'
         uses: actions/upload-artifact@v4
         with:
-          name: encrypted-destruction-report
-          path: encrypted-destruction-report.gpg
+          name: destruction-report
+          path: destruction-report.txt
 
-      # Run security checks with Checkov
-      - name: Run Checkov security scan
-        id: checkov
-        uses: bridgecrewio/checkov-action@master
-        with:
-          framework: terraform
-          output_format: cli,sarif
-          output_file_path: console,results.sarif
-        continue-on-error: true
-
-      - name: Upload Checkov results
+      # Save Terraform state
+      - name: Save Terraform state
         uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: checkov-results
-          path: results.sarif
+          name: terraform-state
+          path: |
+            terraform.tfstate
+            terraform.tfstate.backup

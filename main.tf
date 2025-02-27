@@ -42,6 +42,22 @@ resource "hcloud_firewall" "k0s_firewall" {
     source_ips = ["0.0.0.0/0", "::/0"]
   }
 
+  # k0s API
+  rule {
+    direction  = "in"
+    protocol   = "tcp"
+    port       = "9443"
+    source_ips = ["0.0.0.0/0", "::/0"]
+  }
+
+  # Konnectivity
+  rule {
+    direction  = "in"
+    protocol   = "tcp"
+    port       = "8132"
+    source_ips = ["0.0.0.0/0", "::/0"]
+  }
+
   # Allow all internal traffic
   rule {
     direction  = "in"
@@ -72,10 +88,8 @@ resource "hcloud_server" "controller" {
   location     = var.location
   ssh_keys     = [var.ssh_key]
   firewall_ids = [hcloud_firewall.k0s_firewall.id]
-  
-  network {
-    network_id = hcloud_network.k0s_network.id
-    ip         = "10.0.1.10"
+  labels = {
+    role = "controller"
   }
   
   depends_on = [hcloud_network_subnet.k0s_subnet]
@@ -95,6 +109,12 @@ resource "hcloud_server" "controller" {
   }
 }
 
+resource "hcloud_server_network" "controller_network" {
+  server_id = hcloud_server.controller.id
+  subnet_id = hcloud_network_subnet.k0s_subnet.id
+  ip        = "10.0.1.10"
+}
+
 resource "hcloud_server" "worker" {
   count        = 2
   name         = "k0s-worker-${count.index + 1}"
@@ -103,10 +123,8 @@ resource "hcloud_server" "worker" {
   location     = var.location
   ssh_keys     = [var.ssh_key]
   firewall_ids = [hcloud_firewall.k0s_firewall.id]
-  
-  network {
-    network_id = hcloud_network.k0s_network.id
-    ip         = "10.0.1.${count.index + 20}"
+  labels = {
+    role = "worker"
   }
   
   depends_on = [hcloud_network_subnet.k0s_subnet]
@@ -124,4 +142,53 @@ resource "hcloud_server" "worker" {
       "apt-get install -y curl jq net-tools"
     ]
   }
+}
+
+resource "hcloud_server_network" "worker_network" {
+  count     = 2
+  server_id = hcloud_server.worker[count.index].id
+  subnet_id = hcloud_network_subnet.k0s_subnet.id
+  ip        = "10.0.1.${count.index + 20}"
+}
+
+# Load Balancer Configuration
+resource "hcloud_load_balancer" "k0s_load_balancer" {
+  name               = "k0s-load-balancer"
+  load_balancer_type = "lb11"
+  location           = var.location
+}
+
+resource "hcloud_load_balancer_network" "load_balancer_network" {
+  load_balancer_id = hcloud_load_balancer.k0s_load_balancer.id
+  subnet_id        = hcloud_network_subnet.k0s_subnet.id
+  ip               = "10.0.1.100"
+}
+
+# Target the controller node with the label selector
+resource "hcloud_load_balancer_target" "load_balancer_target" {
+  type             = "server"
+  load_balancer_id = hcloud_load_balancer.k0s_load_balancer.id
+  server_id        = hcloud_server.controller.id
+}
+
+# Configure Load Balancer Services
+resource "hcloud_load_balancer_service" "load_balancer_service_6443" {
+  load_balancer_id = hcloud_load_balancer.k0s_load_balancer.id
+  protocol         = "tcp"
+  listen_port      = 6443
+  destination_port = 6443
+}
+
+resource "hcloud_load_balancer_service" "load_balancer_service_9443" {
+  load_balancer_id = hcloud_load_balancer.k0s_load_balancer.id
+  protocol         = "tcp"
+  listen_port      = 9443
+  destination_port = 9443
+}
+
+resource "hcloud_load_balancer_service" "load_balancer_service_8132" {
+  load_balancer_id = hcloud_load_balancer.k0s_load_balancer.id
+  protocol         = "tcp"
+  listen_port      = 8132
+  destination_port = 8132
 }

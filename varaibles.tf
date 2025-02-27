@@ -18,13 +18,13 @@ variable "ssh_private_key_path" {
 variable "server_type_controller" {
   description = "Server type for controller node"
   type        = string
-  default     = "cx21"
+  default     = "cax11"
 }
 
 variable "server_type_worker" {
   description = "Server type for worker nodes"
   type        = string
-  default     = "cx21"
+  default     = "cax11"
 }
 
 variable "location" {
@@ -36,5 +36,5 @@ variable "location" {
 variable "k0s_version" {
   description = "k0s version to install"
   type        = string
-  default     = "v1.28.4+k0s.0"
+  default     = "v1.32.1+k0s.0"
 }
