@@ -33,7 +33,7 @@ on:
       k0s_version:
         description: 'k0s version'
         required: true
-        default: 'v1.28.4+k0s.0'
+        default: 'v1.32.1+k0s.0'
 
 env:
   HCLOUD_TOKEN: ${{ github.event.inputs.hetzner_token }}
