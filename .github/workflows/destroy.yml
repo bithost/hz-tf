@@ -139,7 +139,7 @@ jobs:
             ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/id_rsa root@${ip} "echo Connection successful; hostname; ip addr"
           done
 
-      - name: Create k0sctl.yaml directly
+      - name: Generate k0sctl.yaml configuration
         if: github.event.inputs.action == 'deploy'
         run: |
           CONTROLLER_IP=$(terraform output -raw controller_ip)
@@ -148,8 +148,7 @@ jobs:
           WORKER_PRIVATE_IPS=$(terraform output -json worker_private_ips | jq -r '.[]')
           LOADBALANCER_IP=$(terraform output -raw loadbalancer_ip)
           
-          # Create the YAML file as a single string with proper indentation
-          cat > k0sctl.yaml << 'EOF'
+          cat > k0sctl.yaml << EOF
           apiVersion: k0sctl.k0sproject.io/v1beta1
           kind: Cluster
           metadata:
@@ -157,20 +156,16 @@ jobs:
           spec:
             hosts:
             - ssh:
-                address: _CONTROLLER_IP_
+                address: ${CONTROLLER_IP}
                 user: root
                 port: 22
                 keyPath: ~/.ssh/id_rsa
               role: controller
-              privateAddress: _CONTROLLER_PRIVATE_IP_
+              privateAddress: ${CONTROLLER_PRIVATE_IP}
               installFlags:
               - --enable-worker=false
-              - --no-taints
+              - --kubelet-extra-args=--cloud-provider=external
           EOF
-          
-          # Replace the placeholders
-          sed -i "s/_CONTROLLER_IP_/$CONTROLLER_IP/g" k0sctl.yaml
-          sed -i "s/_CONTROLLER_PRIVATE_IP_/$CONTROLLER_PRIVATE_IP/g" k0sctl.yaml
           
           # Add worker nodes
           WORKER_IP_ARRAY=($WORKER_IPS)
@@ -185,26 +180,26 @@ jobs:
                 keyPath: ~/.ssh/id_rsa
               role: worker
               privateAddress: ${WORKER_PRIVATE_IP_ARRAY[$i]}
+              installFlags:
+              - --kubelet-extra-args=--cloud-provider=external
           EOF
           done
           
-          # Add k0s config
           cat >> k0sctl.yaml << EOF
             k0s:
               version: ${{ github.event.inputs.k0s_version }}
-              dynamicConfig: false
               config:
                 apiVersion: k0s.k0sproject.io/v1beta1
                 kind: ClusterConfig
                 metadata:
-                  name: k0s
+                  name: hetzner-k0s
                 spec:
                   api:
                     externalAddress: ${LOADBALANCER_IP}
                     sans:
                     - ${LOADBALANCER_IP}
                     - ${CONTROLLER_IP}
-                    - ${CONTROLLER_PRIVATE_IP}
+                    port: 6443
                   network:
                     provider: kuberouter
                     podCIDR: 10.244.0.0/16
@@ -213,12 +208,14 @@ jobs:
                       mode: iptables
                   telemetry:
                     enabled: false
+                  konnectivity:
+                    adminPort: 8133
+                    agentPort: 8132
           EOF
           
-          # Debug - show the YAML file
-          echo "===== k0sctl.yaml content: ====="
+          # Print the generated config for debugging
+          echo "Generated k0sctl.yaml:"
           cat k0sctl.yaml
-          echo "=================================="
 
       - name: Deploy k0s cluster
         if: github.event.inputs.action == 'deploy'
