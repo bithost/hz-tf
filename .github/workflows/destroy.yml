@@ -47,12 +47,18 @@ env:
 
 jobs:
   manage-cluster:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y unzip gnupg curl jq
+
       - name: Download Encrypted Terraform State
+        id: download-state
         uses: badgerhobbs/terraform-state@v2
         with:
           encryption_key: ${{ secrets.STATE_ENCRYPTION_PASSPHRASE }}
@@ -93,6 +99,7 @@ jobs:
           k0sctl version
 
       - name: Terraform Plan
+        id: plan
         run: terraform plan -out=tfplan
 
       - name: Create Infrastructure
@@ -208,10 +215,6 @@ jobs:
       - name: Encrypt kubeconfig
         if: github.event.inputs.action == 'deploy'
         run: |
-          # Install gpg
-          sudo apt-get update && sudo apt-get install -y gnupg
-          
-          # Encrypt kubeconfig
           echo "${{ secrets.STATE_ENCRYPTION_PASSPHRASE }}" | gpg --batch --yes --passphrase-fd 0 -c kubeconfig
           mv kubeconfig.gpg encrypted-kubeconfig.gpg
 
