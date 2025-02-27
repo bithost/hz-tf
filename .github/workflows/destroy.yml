@@ -89,9 +89,14 @@ jobs:
         uses: actions/setup-node@v3
         with:
           node-version: '18' 
-          
+
       - name: Initialize Terraform
         run: terraform init
+
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: 'default' # default is latest stable
+        id: install
 
       # Steps for deploying the cluster
       - name: Install k0sctl
