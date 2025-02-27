@@ -52,10 +52,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: |
-          apt-get update
-          apt-get install -y unzip gnupg curl jq
+      # - name: Install dependencies
+      #   run: |
+      #     apt-get update
+      #     apt-get install -y unzip gnupg curl jq
 
       - name: Download Encrypted Terraform State
         id: download-state
