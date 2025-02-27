@@ -5,7 +5,7 @@ output "controller_ip" {
 
 output "controller_private_ip" {
   description = "Private IP address of the controller node"
-  value       = tolist(hcloud_server.controller.network)[0].ip
+  value       = hcloud_server_network.controller_network.ip
 }
 
 output "worker_ips" {
@@ -15,7 +15,7 @@ output "worker_ips" {
 
 output "worker_private_ips" {
   description = "Private IP addresses of the worker nodes"
-  value       = [for worker in hcloud_server.worker : tolist(worker.network)[0].ip]
+  value       = [for i, worker in hcloud_server.worker : hcloud_server_network.worker_network[i].ip]
 }
 
 output "loadbalancer_ip" {
