@@ -89,9 +89,9 @@ resource "hcloud_firewall" "k0s_firewall" {
   }
 }
 
-resource "hcloud_ssh_key" "k0s_ssh_key" {
-  name       = "k0s-ssh-key"
-  public_key = file(var.ssh_public_key_path)
+# Use the existing SSH key by name instead of creating a new one
+data "hcloud_ssh_key" "existing_key" {
+  name = var.ssh_key
 }
 
 resource "hcloud_server" "controller" {
@@ -99,7 +99,7 @@ resource "hcloud_server" "controller" {
   image        = "ubuntu-22.04"
   server_type  = var.server_type_controller
   location     = var.location
-  ssh_keys     = [hcloud_ssh_key.k0s_ssh_key.id]
+  ssh_keys     = [data.hcloud_ssh_key.existing_key.id]
   firewall_ids = [hcloud_firewall.k0s_firewall.id]
   labels = {
     role = "controller"
@@ -143,7 +143,7 @@ resource "hcloud_server" "worker" {
   image        = "ubuntu-22.04"
   server_type  = var.server_type_worker
   location     = var.location
-  ssh_keys     = [hcloud_ssh_key.k0s_ssh_key.id]
+  ssh_keys     = [data.hcloud_ssh_key.existing_key.id]
   firewall_ids = [hcloud_firewall.k0s_firewall.id]
   labels = {
     role = "worker"
