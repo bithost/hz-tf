@@ -55,7 +55,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y unzip gnupg curl jq nodejs npm
+          sudo apt-get install -y unzip gnupg curl jq 
 
       - name: Download Encrypted Terraform State
         id: download-state
@@ -85,7 +85,11 @@ jobs:
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keygen -y -f ~/.ssh/id_rsa > ~/.ssh/id_rsa.pub
-
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18' 
+          
       - name: Initialize Terraform
         run: terraform init
 
