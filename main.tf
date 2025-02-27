@@ -54,7 +54,15 @@ resource "hcloud_firewall" "k0s_firewall" {
   rule {
     direction  = "in"
     protocol   = "tcp"
-    port       = "8132"
+    port       = "8132-8133"
+    source_ips = ["0.0.0.0/0", "::/0"]
+  }
+  
+  # etcd peer
+  rule {
+    direction  = "in"
+    protocol   = "tcp"
+    port       = "2380"
     source_ips = ["0.0.0.0/0", "::/0"]
   }
 
@@ -81,12 +89,17 @@ resource "hcloud_firewall" "k0s_firewall" {
   }
 }
 
+resource "hcloud_ssh_key" "k0s_ssh_key" {
+  name       = "k0s-ssh-key"
+  public_key = file(var.ssh_public_key_path)
+}
+
 resource "hcloud_server" "controller" {
   name         = "k0s-controller"
   image        = "ubuntu-22.04"
   server_type  = var.server_type_controller
   location     = var.location
-  ssh_keys     = [var.ssh_key]
+  ssh_keys     = [hcloud_ssh_key.k0s_ssh_key.id]
   firewall_ids = [hcloud_firewall.k0s_firewall.id]
   labels = {
     role = "controller"
@@ -99,12 +112,21 @@ resource "hcloud_server" "controller" {
     type        = "ssh"
     user        = "root"
     private_key = file(var.ssh_private_key_path)
+    timeout     = "5m"
   }
 
   provisioner "remote-exec" {
     inline = [
       "apt-get update",
-      "apt-get install -y curl jq net-tools"
+      "apt-get install -y curl jq net-tools iptables",
+      "echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config",
+      "echo 'StrictHostKeyChecking no' >> /etc/ssh/ssh_config",
+      "echo 'UserKnownHostsFile /dev/null' >> /etc/ssh/ssh_config",
+      "systemctl restart sshd",
+      "iptables -F",  # Flush existing firewall rules
+      "iptables -P INPUT ACCEPT",
+      "iptables -P FORWARD ACCEPT",
+      "iptables -P OUTPUT ACCEPT"
     ]
   }
 }
@@ -121,7 +143,7 @@ resource "hcloud_server" "worker" {
   image        = "ubuntu-22.04"
   server_type  = var.server_type_worker
   location     = var.location
-  ssh_keys     = [var.ssh_key]
+  ssh_keys     = [hcloud_ssh_key.k0s_ssh_key.id]
   firewall_ids = [hcloud_firewall.k0s_firewall.id]
   labels = {
     role = "worker"
@@ -134,12 +156,21 @@ resource "hcloud_server" "worker" {
     type        = "ssh"
     user        = "root"
     private_key = file(var.ssh_private_key_path)
+    timeout     = "5m"
   }
 
   provisioner "remote-exec" {
     inline = [
       "apt-get update",
-      "apt-get install -y curl jq net-tools"
+      "apt-get install -y curl jq net-tools iptables",
+      "echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config",
+      "echo 'StrictHostKeyChecking no' >> /etc/ssh/ssh_config",
+      "echo 'UserKnownHostsFile /dev/null' >> /etc/ssh/ssh_config",
+      "systemctl restart sshd",
+      "iptables -F",  # Flush existing firewall rules
+      "iptables -P INPUT ACCEPT",
+      "iptables -P FORWARD ACCEPT",
+      "iptables -P OUTPUT ACCEPT"
     ]
   }
 }
@@ -191,4 +222,11 @@ resource "hcloud_load_balancer_service" "load_balancer_service_8132" {
   protocol         = "tcp"
   listen_port      = 8132
   destination_port = 8132
+}
+
+resource "hcloud_load_balancer_service" "load_balancer_service_8133" {
+  load_balancer_id = hcloud_load_balancer.k0s_load_balancer.id
+  protocol         = "tcp"
+  listen_port      = 8133
+  destination_port = 8133
 }

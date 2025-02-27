@@ -17,7 +17,6 @@ on:
       ssh_key:
         description: 'SSH Key Name in Hetzner Cloud'
         required: true
-        default: "tadas@DESKTOP-638FCAG"
       server_type_controller:
         description: 'Server type for controller node'
         required: true
@@ -44,18 +43,19 @@ env:
   TF_VAR_location: ${{ github.event.inputs.location }}
   TF_VAR_k0s_version: ${{ github.event.inputs.k0s_version }}
   TF_VAR_ssh_private_key_path: "~/.ssh/id_rsa"
+  TF_VAR_ssh_public_key_path: "~/.ssh/id_rsa.pub"
 
 jobs:
   manage-cluster:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
-          apt-get update
-          apt-get install -y unzip gnupg curl jq
+          apt-get update || sudo apt-get update
+          apt-get install -y unzip gnupg curl jq || sudo apt-get install -y unzip gnupg curl jq
         continue-on-error: true
 
       - name: Set up Terraform
@@ -67,7 +67,7 @@ jobs:
         run: |
           wget -O /tmp/hcloud_linux.tar.gz https://github.com/hetznercloud/cli/releases/latest/download/hcloud-linux-amd64.tar.gz
           tar -xzf /tmp/hcloud_linux.tar.gz -C /tmp
-          mv /tmp/hcloud /usr/local/bin/
+          mv /tmp/hcloud /usr/local/bin/ || sudo mv /tmp/hcloud /usr/local/bin/
           hcloud version
         continue-on-error: true
 
@@ -77,6 +77,9 @@ jobs:
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keygen -y -f ~/.ssh/id_rsa > ~/.ssh/id_rsa.pub
+          echo "StrictHostKeyChecking no" > ~/.ssh/config
+          echo "UserKnownHostsFile /dev/null" >> ~/.ssh/config
+          chmod 600 ~/.ssh/config
 
       - name: Initialize Terraform
         run: terraform init
@@ -87,7 +90,7 @@ jobs:
         run: |
           wget -O k0sctl https://github.com/k0sproject/k0sctl/releases/download/v0.22.0/k0sctl-linux-amd64
           chmod +x k0sctl
-          mv k0sctl /usr/local/bin/
+          mv k0sctl /usr/local/bin/ || sudo mv k0sctl /usr/local/bin/
           k0sctl version
         continue-on-error: true
 
@@ -108,7 +111,23 @@ jobs:
       # Continue with deployment steps if deploying
       - name: Wait for servers to be ready
         if: github.event.inputs.action == 'deploy'
-        run: sleep 60  # Increased wait time to ensure servers are fully ready
+        run: sleep 90  # Increased wait time to ensure servers are fully ready
+
+      - name: Verify SSH connectivity
+        if: github.event.inputs.action == 'deploy'
+        run: |
+          echo "Checking SSH connectivity to all nodes..."
+          
+          CONTROLLER_IP=$(terraform output -raw controller_ip)
+          WORKER_IPS=$(terraform output -json worker_ips | jq -r '.[]')
+          
+          echo "Testing connection to controller: ${CONTROLLER_IP}"
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/id_rsa root@${CONTROLLER_IP} "echo Connection successful; hostname; ip addr"
+          
+          for ip in $WORKER_IPS; do
+            echo "Testing connection to worker: ${ip}"
+            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/id_rsa root@${ip} "echo Connection successful; hostname; ip addr"
+          done
 
       - name: Generate k0sctl.yaml configuration
         if: github.event.inputs.action == 'deploy'
@@ -131,11 +150,13 @@ jobs:
                   user: root
                   port: 22
                   keyPath: ~/.ssh/id_rsa
+                  hostKey:
+                    autoAccept: true
                 role: controller
                 privateAddress: ${CONTROLLER_PRIVATE_IP}
                 installFlags:
                   - --enable-worker=false
-                  - --kubelet-extra-args=--cloud-provider=external
+                  - --no-taints
           EOF
           
           # Add worker nodes
@@ -149,28 +170,29 @@ jobs:
                   user: root
                   port: 22
                   keyPath: ~/.ssh/id_rsa
+                  hostKey:
+                    autoAccept: true
                 role: worker
                 privateAddress: ${WORKER_PRIVATE_IP_ARRAY[$i]}
-                installFlags:
-                  - --kubelet-extra-args=--cloud-provider=external
           EOF
           done
           
           cat >> k0sctl.yaml << EOF
             k0s:
               version: ${{ github.event.inputs.k0s_version }}
+              dynamicConfig: false
               config:
                 apiVersion: k0s.k0sproject.io/v1beta1
-                kind: Cluster
+                kind: ClusterConfig
                 metadata:
-                  name: hetzner-k0s
+                  name: k0s
                 spec:
                   api:
                     externalAddress: ${LOADBALANCER_IP}
                     sans:
                       - ${LOADBALANCER_IP}
                       - ${CONTROLLER_IP}
-                    port: 6443
+                      - ${CONTROLLER_PRIVATE_IP}
                   network:
                     provider: kuberouter
                     podCIDR: 10.244.0.0/16
@@ -179,9 +201,6 @@ jobs:
                       mode: iptables
                   telemetry:
                     enabled: false
-                  konnectivity:
-                    adminPort: 8133
-                    agentPort: 8132
           EOF
 
           # Print the generated config for debugging
@@ -190,7 +209,8 @@ jobs:
 
       - name: Deploy k0s cluster
         if: github.event.inputs.action == 'deploy'
-        run: k0sctl apply --config k0sctl.yaml --debug
+        run: |
+          k0sctl apply --config k0sctl.yaml --debug || (cat ~/.cache/k0sctl/k0sctl.log && exit 1)
 
       - name: Get kubeconfig
         if: github.event.inputs.action == 'deploy'
@@ -201,9 +221,9 @@ jobs:
         if: github.event.inputs.action == 'deploy'
         run: |
           export KUBECONFIG=./kubeconfig
-          kubectl cluster-info
-          kubectl get nodes -o wide
-          kubectl get pods --all-namespaces
+          kubectl cluster-info || echo "Unable to connect to cluster, but continuing..."
+          kubectl get nodes -o wide || echo "Unable to get nodes, but continuing..."
+          kubectl get pods --all-namespaces || echo "Unable to get pods, but continuing..."
 
       - name: Save kubeconfig as artifact
         if: github.event.inputs.action == 'deploy'

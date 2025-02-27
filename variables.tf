@@ -15,6 +15,12 @@ variable "ssh_private_key_path" {
   default     = "~/.ssh/id_rsa"
 }
 
+variable "ssh_public_key_path" {
+  description = "Path to SSH public key file"
+  type        = string
+  default     = "~/.ssh/id_rsa.pub"
+}
+
 variable "server_type_controller" {
   description = "Server type for controller node"
   type        = string
