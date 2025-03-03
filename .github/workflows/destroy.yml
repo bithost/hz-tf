@@ -57,7 +57,7 @@ env:
 
 jobs:
   manage-cluster:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Clean workspace
         run: |
